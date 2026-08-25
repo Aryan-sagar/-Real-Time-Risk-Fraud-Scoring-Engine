@@ -1,7 +1,7 @@
-Absolutely bro. Paste this **directly into `README.md`**:
+
 
 ````markdown
-# Fintech Real-Time Fraud Risk Engine
+# Real-Time Risk & Fraud Scoring Engine
 
 A production-style real-time fraud detection system designed to score financial transactions in milliseconds using streaming data, online behavioral features, XGBoost, Redis state, and SHAP explainability.
 
