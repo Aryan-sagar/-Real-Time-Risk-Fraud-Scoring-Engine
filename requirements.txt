@@ -1,0 +1,15 @@
+pandas
+numpy
+scikit-learn
+xgboost
+shap
+faker
+matplotlib
+seaborn
+jupyter
+fastapi
+uvicorn
+pydantic
+redis
+pytest
+kafka-python

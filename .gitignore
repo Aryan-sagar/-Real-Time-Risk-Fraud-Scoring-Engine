@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+.env.*
+.vscode/
+*.log
+
+# Generated datasets
+data/synthetic/*.csv
+data/processed/*.csv

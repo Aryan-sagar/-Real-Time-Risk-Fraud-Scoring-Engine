@@ -1,0 +1,50 @@
+services:
+
+  redis:
+    image: redis:7-alpine
+    container_name: fintech-risk-redis
+    ports:
+      - "6379:6379"
+
+  redpanda:
+    image: redpandadata/redpanda:v25.2.1
+    container_name: fintech-risk-redpanda
+    command:
+      - redpanda
+      - start
+      - --overprovisioned
+      - --smp
+      - "1"
+      - --memory
+      - "1G"
+      - --reserve-memory
+      - "0M"
+      - --check=false
+      - --node-id
+      - "0"
+      - --kafka-addr
+      - PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr
+      - PLAINTEXT://localhost:9092
+      - --rpc-addr
+      - 0.0.0.0:33145
+      - --advertise-rpc-addr
+      - redpanda:33145
+    ports:
+      - "9092:9092"
+      - "9644:9644"
+
+  risk-engine:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fintech-risk-engine
+    depends_on:
+      - redis
+      - redpanda
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      KAFKA_BOOTSTRAP_SERVERS: host.docker.internal:9092
+    ports:
+      - "8000:8000"
