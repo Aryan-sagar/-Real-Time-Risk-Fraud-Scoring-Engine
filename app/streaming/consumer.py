@@ -98,7 +98,7 @@ for message in consumer:
     # Idempotency
     # -----------------------------------------------------
 
-    if feature_state.transaction_processed(event.transaction_id):
+    if not feature_state.mark_transaction_processed(event.transaction_id):
         logger.info(f"Duplicate ignored: {event.transaction_id}")
         consumer.commit()
         continue
@@ -190,14 +190,15 @@ for message in consumer:
         )
 
         if state is None:
-            # We already passed transaction_processed() above, so
-            # add_transaction() disagreeing means a real inconsistency
-            # (e.g. a race between the two checks) — not a normal
-            # duplicate path. Worth surfacing, not silently passing.
+            # add_transaction() no longer performs its own duplicate
+            # check — mark_transaction_processed() above is now the
+            # single source of truth for idempotency. This branch
+            # should be unreachable; keeping it as a safety net in case
+            # FeatureState's internals change again.
             logger.warning(
-                f"add_transaction() reported duplicate for "
+                f"add_transaction() returned None for "
                 f"{event.transaction_id} despite passing the earlier "
-                f"idempotency check — check FeatureState consistency."
+                f"idempotency check — investigate FeatureState."
             )
             consumer.commit()
             continue
