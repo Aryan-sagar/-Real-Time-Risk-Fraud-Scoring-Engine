@@ -69,10 +69,7 @@ def score_transaction(request: ScoreRequest):
     )
 
     # Score transaction.
-    result = scorer.predict(
-        features,
-        threshold=0.5,
-    )
+    result = scorer.predict(features)
 
     # Explain only when useful.
     explanations = []
