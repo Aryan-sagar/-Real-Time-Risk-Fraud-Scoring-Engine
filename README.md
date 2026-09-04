@@ -1,201 +1,267 @@
-
 # Real-Time Risk & Fraud Scoring Engine
 
-A production-style real-time fraud detection system designed to score financial transactions in milliseconds using streaming data, online behavioral features, XGBoost, Redis state, and SHAP explainability.
+A production-style real-time fraud detection system for fintech transactions.
 
-The system combines machine learning with real-time transaction state to detect suspicious behavior such as unusual transaction amounts, high transaction velocity, risky merchants, account takeover patterns, and impossible geographic movement.
+The system consumes transaction events, builds stateful behavioral features using Redis, scores transactions with a calibrated XGBoost model, generates SHAP explanations for blocked transactions, and routes malformed events to a Kafka Dead Letter Queue (DLQ).
 
 ---
 
 ## Architecture
 
 ```text
-                    ┌──────────────────────┐
-                    │      Transaction     │
-                    │        Event          │
-                    └──────────┬───────────┘
-                               │
-                               ▼
-                    ┌──────────────────────┐
-                    │       Redpanda       │
-                    │   Event Streaming     │
-                    └──────────┬───────────┘
-                               │
-                               ▼
-                    ┌──────────────────────┐
-                    │   Streaming Consumer │
-                    └──────────┬───────────┘
-                               │
-                    ┌──────────┴───────────┐
-                    ▼                      ▼
-             ┌─────────────┐       ┌──────────────┐
-             │    Redis    │       │    Feature   │
-             │ Online State│──────►│   Assembler  │
-             └─────────────┘       └──────┬───────┘
-                                          │
-                                          ▼
-                                  ┌───────────────┐
-                                  │    XGBoost    │
-                                  │ Fraud Scoring │
-                                  └───────┬───────┘
-                                          │
-                                          ▼
-                                  ┌───────────────┐
-                                  │     SHAP      │
-                                  │ Explainability│
-                                  └───────┬───────┘
-                                          │
-                                          ▼
-                                  ┌───────────────┐
-                                  │ ALLOW / BLOCK │
-                                  └───────────────┘
+                         ┌─────────────────────┐
+                         │  Transaction Events  │
+                         └──────────┬──────────┘
+                                    │
+                                    ▼
+                         ┌─────────────────────┐
+                         │ Redpanda / Kafka    │
+                         │    transactions     │
+                         └──────────┬──────────┘
+                                    │
+                                    ▼
+                    ┌──────────────────────────────┐
+                    │      Risk Engine Consumer    │
+                    │                              │
+                    │  • Validation                │
+                    │  • Idempotency               │
+                    │  • Feature construction      │
+                    │  • Model inference           │
+                    └──────────────┬───────────────┘
+                                   │
+                     ┌─────────────┴─────────────┐
+                     ▼                           ▼
+             ┌────────────────┐          ┌────────────────┐
+             │ Redis Feature  │          │ XGBoost Model  │
+             │     State      │          │                │
+             └────────────────┘          └───────┬────────┘
+                                                 │
+                                                 ▼
+                                        ┌─────────────────┐
+                                        │ Risk Probability│
+                                        │ + Decision      │
+                                        └────────┬────────┘
+                                                 │
+                                    ┌────────────┴────────────┐
+                                    ▼                         ▼
+                                 ALLOW                     BLOCK
+                                                              │
+                                                              ▼
+                                                        SHAP Explanation
 
 
-              ┌────────────────────────────┐
-              │          FastAPI           │
-              │         POST /score        │
-              └────────────┬───────────────┘
-                           │
-                           ▼
-                    Same Risk Engine
+Malformed Events
+       │
+       ▼
+transactions.dlq
 ````
 
 ---
 
-## Key Features
+## Features
 
-### Real-Time Transaction Processing
+### Stateful Transaction Features
 
-Transactions can be consumed from a Redpanda/Kafka-compatible event stream and processed continuously.
+The engine maintains per-account transaction state in Redis and derives real-time behavioral signals including:
 
-### Online Behavioral Features
-
-The system maintains recent account activity using Redis and calculates features such as:
-
-* Transaction count over 1 minute
-* Transaction count over 10 minutes
-* Transaction count over 1 hour
-* Amount spent over 10 minutes
-* Amount spent over 1 hour
-* Distance from previous transaction
-* Time since previous transaction
-* Geographic velocity
+* Transaction count in 1 minute
+* Transaction count in 10 minutes
+* Transaction count in 1 hour
+* Amount sum in 10 minutes
+* Amount sum in 1 hour
 * Account average transaction amount
 * Account transaction standard deviation
 * Amount deviation from account behavior
-* Merchant fraud rate
+* Distance from previous transaction
+* Time since previous transaction
+* Geo-velocity
 * Merchant base risk
+* Merchant fraud rate
 * Hour of day
 * Day of week
 * Weekend indicator
 
-### Machine Learning
-
-An XGBoost classifier is used for fraud probability estimation.
-
-The model was trained using a highly imbalanced fraud dataset and evaluated using PR-AUC and ROC-AUC rather than relying only on accuracy.
-
-Validation performance:
-
-* **PR-AUC: 0.8232**
-* **ROC-AUC: 0.9962**
-
-Test performance:
-
-* **PR-AUC: 0.7165**
-* **ROC-AUC: 0.9946**
-
-The difference between validation and test performance highlights the importance of evaluating fraud models on unseen data rather than relying on a single metric.
-
-### Threshold Analysis
-
-The system supports configurable decision thresholds.
-
-Example at threshold `0.50`:
-
-* Precision: **0.4522**
-* Recall: **0.8693**
-* False positives: **298**
-* False negatives: **37**
-
-The threshold can be adjusted depending on the desired balance between fraud detection and customer friction.
+These features allow the model to detect behavioral anomalies rather than relying only on the current transaction.
 
 ---
 
-## Fraud Types
+## Machine Learning
 
-The synthetic transaction generator injects multiple realistic fraud patterns:
+The fraud classifier uses **XGBoost**.
 
-* `account_takeover`
-* `unusual_amount`
-* `risky_merchant`
-* `geo_velocity`
-* `high_velocity`
+The model was trained on 150,300 synthetic fintech transactions containing 2,193 fraudulent transactions.
 
-Fraud distribution in the generated dataset:
+### Dataset
+
+| Metric                  |   Value |
+| ----------------------- | ------: |
+| Transactions            | 150,300 |
+| Fraudulent transactions |   2,193 |
+| Fraud rate              |   1.46% |
+
+### Model Performance
+
+#### Validation
+
+| Metric    |  Score |
+| --------- | -----: |
+| PR-AUC    | 0.8206 |
+| ROC-AUC   | 0.9961 |
+| Precision | 0.6994 |
+| Recall    | 0.7423 |
+| F1        | 0.7202 |
+
+#### Test
+
+| Metric    |  Score |
+| --------- | -----: |
+| PR-AUC    | 0.7192 |
+| ROC-AUC   | 0.9945 |
+| Precision | 0.6538 |
+| Recall    | 0.6608 |
+| F1        | 0.6573 |
+
+Because fraud detection is highly imbalanced, PR-AUC is particularly important when evaluating the model.
+
+---
+
+## Calibrated Decision Threshold
+
+Instead of using the default `0.5` classification threshold, the system selects a threshold using the validation set.
+
+Current calibrated threshold:
 
 ```text
-Total transactions: 150,300
-Fraudulent transactions: 2,193
-Fraud rate: 1.46%
+0.9168
 ```
 
----
-
-## Explainable AI
-
-The system uses SHAP to explain individual fraud decisions.
-
-Example:
+This threshold is persisted in:
 
 ```text
-Risk probability: 0.9997
+data/processed/fraud_xgboost.metadata.json
+```
+
+Both the FastAPI scoring path and Kafka consumer use the same calibrated threshold.
+
+This keeps online decisions consistent with the model evaluation process.
+
+---
+
+## Explainable Fraud Decisions
+
+Blocked transactions are explained using **SHAP**.
+
+For example, a simulated suspicious transaction produced:
+
+```text
+Risk probability: 0.9900
 Decision: BLOCK
+```
 
-Why?
+Strong positive contributors included:
 
-geo_velocity_kmh       +4.7016
-txn_count_10m          +2.9648
-distance_from_previous +1.2279
-amount_sum_10m         +0.7971
+```text
+geo_velocity_kmh     +3.10
+txn_count_10m        +2.33
+```
 
-account_avg_amount     -1.0909
+The transaction involved:
+
+```text
+Amount:                    $950
+Merchant risk:             0.80
+Distance from previous:    1354 km
+Time since previous:       5 minutes
+Geo velocity:              16,251 km/h
 ```
 
 This allows the system to answer not only:
 
-> "Is this transaction suspicious?"
+> "Is this transaction risky?"
 
 but also:
 
-> "Why was this transaction blocked?"
-
-For example, a transaction can be flagged because an account apparently moved more than 1,100 km within five minutes while making several transactions within a short time window.
+> "Why did the system block it?"
 
 ---
 
-## Real-Time State Management
+## Real-Time Idempotency
 
-Redis maintains short-lived account state.
+The engine prevents duplicate transaction processing using Redis.
 
-The state layer provides:
-
-* Recent transaction history
-* Rolling transaction windows
-* Amount aggregation
-* Geographic history
-* Transaction idempotency
-* Automatic state expiration
-
-Transactions are protected against duplicate processing using Redis-backed idempotency.
-
----
-
-## API
-
-The system exposes a FastAPI endpoint:
+The implementation uses Redis `SADD` as an atomic check-and-mark operation:
 
 ```text
+SADD processed_transactions <transaction_id>
+```
+
+Redis returns:
+
+```text
+1 → new transaction
+0 → duplicate
+```
+
+This avoids a race condition between separate `SISMEMBER` and `SADD` operations.
+
+Example:
+
+```text
+First request
+    ↓
+BLOCK
+
+Same transaction again
+    ↓
+DUPLICATE_IGNORED
+```
+
+---
+
+## Dead Letter Queue
+
+Malformed Kafka events are not allowed to crash the consumer.
+
+Invalid events are routed to:
+
+```text
+transactions.dlq
+```
+
+Example test:
+
+```json
+{
+  "transaction_id": "DLQ_TEST_001",
+  "account_id": "ACC_BAD_001"
+}
+```
+
+The event was successfully captured in the DLQ while the consumer continued running.
+
+---
+
+## REST API
+
+FastAPI exposes a real-time scoring endpoint.
+
+### Health Check
+
+```http
+GET /health
+```
+
+Example:
+
+```json
+{
+  "status": "healthy"
+}
+```
+
+### Score Transaction
+
+```http
 POST /score
 ```
 
@@ -205,12 +271,12 @@ Example request:
 {
   "transaction_id": "TXN_001",
   "account_id": "ACC_001",
-  "amount": 950.0,
-  "merchant": "Amazon",
-  "merchant_base_risk": 0.01,
-  "latitude": 19.0760,
+  "amount": 950,
+  "merchant": "Suspicious Merchant",
+  "merchant_base_risk": 0.8,
+  "latitude": 19.076,
   "longitude": 72.8777,
-  "timestamp": "2026-08-25T04:05:00+00:00"
+  "timestamp": "2026-09-05T05:05:00"
 }
 ```
 
@@ -219,102 +285,59 @@ Example response:
 ```json
 {
   "transaction_id": "TXN_001",
-  "risk_probability": 0.9997,
-  "decision": "BLOCK",
-  "explanations": [
-    {
-      "feature": "geo_velocity_kmh",
-      "shap_value": 4.7
-    }
-  ]
+  "risk_probability": 0.9900,
+  "decision": "BLOCK"
 }
 ```
 
-Health check:
-
-```text
-GET /health
-```
-
 ---
 
-## Docker
+## Technology Stack
 
-The complete application is containerized.
-
-Services:
-
-```text
-risk-engine
-redis
-redpanda
-```
-
-Start the complete stack:
-
-```bash
-docker compose up -d
-```
-
-Check running services:
-
-```bash
-docker compose ps
-```
-
-API:
-
-```text
-http://localhost:8000
-```
-
-Health check:
-
-```text
-http://localhost:8000/health
-```
-
----
-
-## Testing
-
-The project includes automated tests for the state-management and API layers.
-
-Run:
-
-```bash
-python -m pytest tests -v
-```
-
-The test suite verifies functionality including:
-
-* Redis-backed feature state
-* Transaction storage
-* Rolling transaction history
-* Idempotent transaction processing
-* API health endpoint
-* Transaction scoring endpoint
-* Valid risk decisions
+| Component      | Technology       |
+| -------------- | ---------------- |
+| Language       | Python           |
+| API            | FastAPI          |
+| ML             | XGBoost          |
+| Explainability | SHAP             |
+| Streaming      | Redpanda / Kafka |
+| State Store    | Redis            |
+| Validation     | Pydantic         |
+| Testing        | Pytest           |
+| Containers     | Docker           |
+| Orchestration  | Docker Compose   |
 
 ---
 
 ## Project Structure
 
 ```text
-fintech-risk-engine/
+real-time-risk-fraud-scoring-engine/
 │
 ├── app/
 │   ├── api/
+│   │   └── main.py
+│   │
 │   ├── features/
+│   │   └── feature_engineering.py
+│   │
 │   ├── models/
-│   └── streaming/
+│   │   ├── train.py
+│   │   ├── scorer.py
+│   │   └── merchant_risk.py
+│   │
+│   ├── streaming/
+│   │   ├── consumer.py
+│   │   ├── events.py
+│   │   └── feature_state.py
+│   │
+│   └── explainability/
+│       └── ...
 │
 ├── data/
-│   ├── processed/
-│   └── synthetic/
-│
-├── notebooks/
-│   └── 01_eda.ipynb
+│   ├── raw/
+│   ├── synthetic/
+│   └── processed/
 │
 ├── scripts/
 │   ├── generate_transactions.py
@@ -328,129 +351,215 @@ fintech-risk-engine/
 └── README.md
 ```
 
-Generated CSV datasets are intentionally excluded from Git tracking. They can be regenerated using the project scripts.
-
 ---
 
-## Tech Stack
+## Running Locally
 
-| Component        | Technology       |
-| ---------------- | ---------------- |
-| Language         | Python           |
-| Machine Learning | XGBoost          |
-| Explainability   | SHAP             |
-| Data Processing  | Pandas, NumPy    |
-| API              | FastAPI          |
-| Streaming        | Redpanda / Kafka |
-| Online State     | Redis            |
-| Containerization | Docker           |
-| Testing          | Pytest           |
-| Model Evaluation | PR-AUC, ROC-AUC  |
+### 1. Clone
 
----
-
-## Design Principles
-
-### Train/Serve Feature Parity
-
-The same feature definitions are maintained between offline model training and online inference to reduce training-serving skew.
-
-### Stateful Real-Time Inference
-
-Fraud decisions depend not only on the current transaction but also on recent account behavior.
-
-### Idempotent Processing
-
-Duplicate transaction events are detected and ignored using Redis-backed transaction tracking.
-
-### Explainability
-
-High-risk decisions are accompanied by SHAP-based feature contributions.
-
-### Configurable Risk Threshold
-
-The decision boundary can be adjusted depending on the operational cost of false positives versus false negatives.
-
----
-
-## Example Detection Scenario
-
-Consider an account making:
-
-```text
-04:00 — ₹850 — Delhi
-04:05 — ₹950 — Mumbai
+```bash
+git clone https://github.com/Aryan-sagar/Fintech-risk-engine.git
+cd Fintech-risk-engine
 ```
 
-The system observes:
+### 2. Create virtual environment
+
+Windows:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+```
+
+### 3. Install dependencies
+
+```powershell
+pip install -r requirements.txt
+```
+
+### 4. Start infrastructure
+
+```powershell
+docker compose up -d redis redpanda
+```
+
+Verify Redis:
+
+```powershell
+docker exec fintech-risk-redis redis-cli ping
+```
+
+Expected:
 
 ```text
-Distance: ~1,148 km
+PONG
+```
+
+### 5. Start the API
+
+```powershell
+uvicorn app.api.main:app --reload
+```
+
+API:
+
+```text
+http://localhost:8000
+```
+
+### 6. Start the Kafka consumer
+
+From the project root:
+
+```powershell
+python -m app.streaming.consumer
+```
+
+The consumer listens to:
+
+```text
+transactions
+```
+
+and sends invalid events to:
+
+```text
+transactions.dlq
+```
+
+---
+
+## Docker
+
+Run the complete stack:
+
+```powershell
+docker compose up -d --build
+```
+
+Check services:
+
+```powershell
+docker compose ps
+```
+
+Check risk engine logs:
+
+```powershell
+docker logs fintech-risk-engine
+```
+
+---
+
+## Testing
+
+Run the test suite:
+
+```powershell
+python -m pytest -q
+```
+
+Current automated test status:
+
+```text
+2 passed
+```
+
+The system has additionally been manually tested for:
+
+* REST transaction scoring
+* Normal transaction → `ALLOW`
+* Suspicious transaction → `BLOCK`
+* Duplicate transaction → `DUPLICATE_IGNORED`
+* Kafka normal event → `ALLOW`
+* Kafka fraud event → `BLOCK`
+* Malformed Kafka event → DLQ
+* Redis state updates
+* SHAP fraud explanations
+
+---
+
+## Example Fraud Scenario
+
+A legitimate transaction:
+
+```text
+Amount: $60
+Merchant risk: 0.05
+```
+
+was allowed:
+
+```text
+risk_probability ≈ 0.00018
+decision = ALLOW
+```
+
+A second transaction from the same account shortly afterward:
+
+```text
+Amount: $950
+Merchant risk: 0.80
+Distance: 1354 km
 Time difference: 5 minutes
-Geographic velocity: ~13,777 km/h
+Geo velocity: 16,251 km/h
 ```
 
-The transaction is therefore highly suspicious.
-
-The model can produce:
+was blocked:
 
 ```text
-Risk probability: 99%+
-Decision: BLOCK
+risk_probability ≈ 0.99004
+decision = BLOCK
 ```
 
-with geographic velocity, transaction velocity, and distance contributing strongly to the decision.
+The system also generated SHAP explanations identifying the strongest contributing features.
 
 ---
 
-## Limitations
+## Engineering Highlights
 
-This project uses a synthetic transaction dataset and therefore should not be considered a production fraud model without further validation.
+This project demonstrates more than model training. It focuses on the engineering required to serve ML models in a real-time environment:
 
-A production deployment would require:
-
-* Real transaction data
-* Model calibration
-* Temporal cross-validation
-* Drift monitoring
-* Feature freshness monitoring
-* Model retraining pipelines
-* Alert investigation workflows
-* Production observability
-* Authentication and authorization
-* Rate limiting
-* Secure secret management
-* High-availability infrastructure
+* Stateful online feature engineering
+* Streaming event processing
+* Redis-backed feature state
+* Atomic transaction idempotency
+* Calibrated model thresholds
+* Explainable fraud decisions
+* Kafka/Redpanda consumer groups
+* Dead Letter Queue handling
+* REST inference API
+* Dockerized infrastructure
+* Automated testing
+* Separation of training and inference artifacts
 
 ---
 
 ## Future Improvements
 
-Potential extensions include:
+Planned improvements include:
 
-* Kafka/Redpanda multi-partition scaling
-* Feature store integration
-* Model monitoring
-* Data drift detection
-* Probability calibration
-* Cost-sensitive threshold optimization
-* Online model retraining
-* Grafana/Prometheus observability
-* Fraud analyst dashboard
-* Model registry
-* Cloud deployment
-* CI/CD pipeline
-* Kubernetes deployment
+* [ ] Run Kafka consumer as a dedicated Docker Compose service
+* [ ] Improve idempotency lifecycle with processing/success states
+* [ ] Add comprehensive integration tests
+* [ ] Add Prometheus metrics
+* [ ] Add Grafana monitoring dashboard
+* [ ] Add model drift monitoring
+* [ ] Add structured JSON logging
+* [ ] Add CI/CD with GitHub Actions
+* [ ] Add load testing for the scoring API
+* [ ] Add model versioning and registry support
 
 ---
 
-## Project Goal
+## Author
 
-The goal of this project was to build more than a static fraud-classification notebook.
+**Aryan Sagar**
 
-It demonstrates how a machine learning model can be integrated into a **stateful, explainable, real-time transaction risk system** capable of consuming events, generating behavioral features, scoring transactions, explaining decisions, and returning an operational `ALLOW` or `BLOCK` decision.
+B.Tech, IIT Ropar
 
-**Built as an end-to-end fintech ML engineering project.**
+Interested in Data Engineering, Machine Learning, AI Systems, and FinTech infrastructure.
 
 ```
-```
+
+
