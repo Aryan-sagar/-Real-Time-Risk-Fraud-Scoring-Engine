@@ -50,17 +50,13 @@ class FeatureState:
     # Idempotency
     # ---------------------------------------------------------
 
-    def transaction_processed(self, transaction_id):
-        return self.redis.sismember(
-            PROCESSED_SET,
-            transaction_id,
-        )
-
     def mark_transaction_processed(self, transaction_id):
-        self.redis.sadd(
-            PROCESSED_SET,
-            transaction_id,
-        )
+        """Returns True if this is a new transaction, False if it was
+        already processed. SADD's return value (1 = added, 0 = existed)
+        makes the check-and-mark atomic — no window between a separate
+        SISMEMBER and SADD for two near-simultaneous duplicates to both
+        pass the check before either marks itself processed."""
+        return bool(self.redis.sadd(PROCESSED_SET, transaction_id))
 
     # ---------------------------------------------------------
     # Account state
@@ -204,19 +200,18 @@ class FeatureState:
         merchant_base_risk=0.0,
         is_fraud=None,
     ):
+        # No duplicate check here — mark_transaction_processed() is
+        # called by the caller (consumer.py / main.py) BEFORE this
+        # runs, so by the time we get here the transaction is already
+        # confirmed new. Idempotency is decided exactly once, upstream.
         if transaction_id is None:
             transaction_id = (
                 f"TEST_{account_id}_{timestamp}"
             )
-        if self.transaction_processed(
-            transaction_id
-        ):
-            return None
 
         state = self.get_account_state(
             account_id
         )
-    
 
         transaction = {
             "transaction_id": transaction_id,
@@ -267,10 +262,6 @@ class FeatureState:
         self.save_account_state(
             account_id,
             state,
-        )
-
-        self.mark_transaction_processed(
-            transaction_id
         )
 
         return state
