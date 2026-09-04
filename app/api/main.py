@@ -41,6 +41,15 @@ def health():
 @app.post("/score")
 def score_transaction(request: ScoreRequest):
 
+    # Idempotency check — must happen before feature building/scoring,
+    # not just before persistence, or a duplicate still gets scored
+    # twice (wasted SHAP/inference work) even if state doesn't drift.
+    if not feature_state.mark_transaction_processed(request.transaction_id):
+        return {
+            "transaction_id": request.transaction_id,
+            "decision": "DUPLICATE_IGNORED",
+        }
+
     transaction = {
         "transaction_id": request.transaction_id,
         "account_id": request.account_id,
@@ -68,7 +77,9 @@ def score_transaction(request: ScoreRequest):
         previous_transactions,
     )
 
-    # Score transaction.
+    # Score transaction — uses scorer.threshold (calibrated at training
+    # time), not a hardcoded value. Keeps this path consistent with the
+    # Kafka consumer's decision logic.
     result = scorer.predict(features)
 
     # Explain only when useful.
