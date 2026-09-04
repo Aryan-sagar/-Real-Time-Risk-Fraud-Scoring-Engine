@@ -1,0 +1,27 @@
+{
+  "threshold": 0.9168015718460083,
+  "validation_f1_at_threshold": 0.7202380952380953,
+  "validation_pr_auc": 0.8206197111316748,
+  "validation_roc_auc": 0.9961402072012098,
+  "test_pr_auc": 0.7192041979750513,
+  "test_roc_auc": 0.9944906038685453,
+  "feature_columns": [
+    "amount",
+    "merchant_base_risk",
+    "account_avg_amount",
+    "account_std_amount",
+    "amount_deviation",
+    "txn_count_1m",
+    "txn_count_10m",
+    "txn_count_1h",
+    "amount_sum_10m",
+    "amount_sum_1h",
+    "distance_from_previous",
+    "time_since_previous_minutes",
+    "geo_velocity_kmh",
+    "hour",
+    "day_of_week",
+    "is_weekend",
+    "merchant_fraud_rate"
+  ]
+}
